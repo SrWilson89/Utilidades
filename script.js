@@ -90,7 +90,15 @@ function showMessageBox(message, type = 'info') {
     
     // Asignar clase de tipo y contenido
     box.classList.add(`message-${type}`);
-    box.querySelector('p').textContent = message;
+    // Se asegura de que el elemento <p> exista o se agrega su contenido
+    const p = box.querySelector('p');
+    if (p) {
+        p.textContent = message;
+    } else {
+        // Fallback si no hay <p> dentro del box
+        box.textContent = message;
+    }
+
 
     // Mostrar
     box.classList.add('show');
@@ -129,7 +137,83 @@ async function initializeFirebase() {
     }
 }
 
-// --- Lógica de Notas (Local Storage JSON Persistence) ---
+// ----------------------------------------------------------------------
+// --- LÓGICA DE NOTAS (INCLUYENDO COPIAR Y EDITAR) ---
+// ----------------------------------------------------------------------
+
+/** 📋 Copia el contenido de una nota al portapapeles */
+function copyNoteContent(noteId) {
+    const note = notesData.find(n => n.id === noteId);
+    if (!note) {
+        showMessageBox('Error: Nota no encontrada para copiar.', 'error');
+        return;
+    }
+
+    // Usar el Clipboard API para copiar el contenido (solo contenido)
+    navigator.clipboard.writeText(note.content.trim())
+        .then(() => {
+            showMessageBox('Contenido de la nota copiado al portapapeles.', 'success');
+        })
+        .catch(err => {
+            console.error('Error al copiar el contenido:', err);
+            showMessageBox('Error al copiar. (Requisito: HTTPS/Permiso de portapapeles)', 'error');
+        });
+}
+
+/** ✏️ Inicia el proceso de edición de una nota (Simulación con prompt) */
+function startNoteEdit(noteId) {
+    const noteToEdit = notesData.find(n => n.id === noteId);
+
+    if (!noteToEdit) {
+        showMessageBox('Error: Nota no encontrada para editar.', 'error');
+        return;
+    }
+
+    // SIMULACIÓN DE EDICIÓN: Usamos 'prompt' y 'confirm' para obtener nuevos valores.
+    const newTitle = prompt("Edita el Título:", noteToEdit.title);
+    
+    // Si el usuario cancela la edición del título, se detiene la edición.
+    if (newTitle === null) {
+        showMessageBox('Edición cancelada.', 'info');
+        return;
+    }
+    
+    const newContent = prompt("Edita el Contenido:", noteToEdit.content);
+    
+    // Si el usuario cancela la edición del contenido.
+    if (newContent === null) {
+        showMessageBox('Edición cancelada.', 'info');
+        return;
+    }
+    
+    // Si ambos valores son iguales a los originales, no se hace nada.
+    if (newTitle === noteToEdit.title && newContent === noteToEdit.content) {
+         showMessageBox('No se detectaron cambios.', 'info');
+         return;
+    }
+    
+    // Si hay cambios y no se canceló, actualizamos.
+    updateNoteLocal(noteId, newTitle, newContent);
+}
+
+/** 💾 Actualiza el título y contenido de una nota existente */
+function updateNoteLocal(idToUpdate, newTitle, newContent) {
+    const noteIndex = notesData.findIndex(note => note.id === idToUpdate);
+    
+    if (noteIndex !== -1) {
+        // El trim() elimina espacios iniciales/finales. Asegura valores por defecto si quedan vacíos.
+        notesData[noteIndex].title = newTitle.trim() || 'Nota Sin Título'; 
+        notesData[noteIndex].content = newContent.trim() || 'Contenido vacío.'; 
+        notesData[noteIndex].updatedAt = new Date().toISOString(); // Opcional: marca la fecha de modificación
+
+        saveNotes(); // Persistencia
+        renderNotes();
+        showMessageBox('Nota actualizada con éxito.', 'success');
+    } else {
+        showMessageBox('Error: No se encontró la nota para actualizar.', 'error');
+    }
+}
+
 
 function renderNotes() {
     const container = document.getElementById('notes-container');
@@ -155,11 +239,24 @@ function renderNotes() {
         noteElement.innerHTML = `
             <div class="flex justify-between items-start">
                 <h4 class="text-lg font-bold text-gray-900 dark:text-white mb-2">${note.title}</h4>
-                <button data-id="${note.id}" class="delete-note-btn text-red-500 hover:text-red-700 dark:hover:text-red-300 transition" aria-label="Borrar nota">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                        <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
-                    </svg>
-                </button>
+                <div class="flex space-x-2"> 
+                    <button data-id="${note.id}" class="copy-note-btn text-blue-500 hover:text-blue-700 dark:hover:text-blue-300 transition" aria-label="Copiar contenido de la nota">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M7 9a2 2 0 012-2h6a2 2 0 012 2v6a2 2 0 01-2 2H9a2 2 0 01-2-2V9z" />
+                            <path d="M5 3a2 2 0 00-2 2v6a2 2 0 002 2h2V5a2 2 0 012-2h6a2 2 0 00-2-2H5z" />
+                        </svg>
+                    </button>
+                    <button data-id="${note.id}" class="edit-note-btn text-yellow-500 hover:text-yellow-700 dark:hover:text-yellow-300 transition" aria-label="Editar nota">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zm-3.646 3.646l-7 7A1 1 0 003 17.07V19h1.939a1 1 0 00.707-.293l7-7-2.828-2.828z" />
+                        </svg>
+                    </button>
+                    <button data-id="${note.id}" class="delete-note-btn text-red-500 hover:text-red-700 dark:hover:text-red-300 transition" aria-label="Borrar nota">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd" />
+                        </svg>
+                    </button>
+                </div>
             </div>
             <p class="text-sm text-gray-600 dark:text-gray-300 whitespace-pre-wrap">${note.content}</p>
             <p class="text-xs text-right text-gray-400 dark:text-gray-500 mt-2">Creada: ${date}</p>
@@ -167,9 +264,18 @@ function renderNotes() {
         container.appendChild(noteElement);
     });
 
-    // Re-adjuntar listeners para los botones de borrar
+    // Re-adjuntar listeners para los botones
     document.querySelectorAll('.delete-note-btn').forEach(button => {
-        button.onclick = (e) => showDeleteConfirmation(e.currentTarget.dataset.id, 'note');
+        // Utiliza la función global showDeleteConfirmation
+        button.onclick = (e) => window.showDeleteConfirmation(e.currentTarget.dataset.id, 'note');
+    });
+    // NUEVO: Listener para el botón de copiar
+    document.querySelectorAll('.copy-note-btn').forEach(button => {
+        button.onclick = (e) => copyNoteContent(e.currentTarget.dataset.id);
+    });
+    // NUEVO: Listener para el botón de editar
+    document.querySelectorAll('.edit-note-btn').forEach(button => {
+        button.onclick = (e) => startNoteEdit(e.currentTarget.dataset.id);
     });
 }
 
@@ -281,7 +387,8 @@ function renderAccounting() {
 
     // Adjuntar listeners para borrar transacciones
     document.querySelectorAll('.delete-transaction-btn').forEach(button => {
-        button.onclick = (e) => showDeleteConfirmation(e.currentTarget.dataset.id, 'transaction');
+        // Utiliza la función global showDeleteConfirmation
+        button.onclick = (e) => window.showDeleteConfirmation(e.currentTarget.dataset.id, 'transaction');
     });
 }
 
@@ -344,17 +451,24 @@ window.showDeleteConfirmation = function(id, type) {
     const message = type === 'note' ? 
                     '¿Estás seguro de que quieres borrar esta nota? Esta acción no se puede deshacer.' :
                     '¿Estás seguro de que quieres borrar esta transacción? Esto afectará tu saldo.';
+    
+    // Asegurarse de que el elemento existe antes de manipularlo
+    const modalTitle = document.getElementById('delete-modal-title');
+    const modalMessage = document.getElementById('delete-modal-message');
+    const deleteModal = document.getElementById('delete-modal');
 
-    document.getElementById('delete-modal-title').textContent = title;
-    document.getElementById('delete-modal-message').textContent = message;
-    document.getElementById('delete-modal').classList.remove('hidden');
+    if (modalTitle && modalMessage && deleteModal) {
+        modalTitle.textContent = title;
+        modalMessage.textContent = message;
+        deleteModal.classList.remove('hidden');
+    }
 }
 
 /** Oculta el modal de confirmación (Hecha global para eventos onclick en HTML) */
 window.hideDeleteConfirmation = function() {
     itemToDelete.id = null;
     itemToDelete.type = null;
-    document.getElementById('delete-modal').classList.add('hidden');
+    document.getElementById('delete-modal')?.classList.add('hidden'); // Uso de optional chaining para mayor seguridad
 }
 
 /** Confirma y ejecuta el borrado (Hecha global para eventos onclick en HTML) */
@@ -387,11 +501,8 @@ window.playGameDice = function() {
         return;
     }
 
-    // 🚩 LÓGICA CLAVE: Cada jugador lanza N-1 dados (Si N=2, lanza 1 dado. Si N=10, lanza 9 dados)
-    // NOTA: Se ha corregido la lógica para que coincida con el texto del botón: "Lanzar Dados (1 por Jugador)"
-    // El código original decía N-1, pero el botón sugiere 1 por jugador. Usaremos la lógica de 1 dado por jugador para simplificar.
-    // Si la lógica N-1 es la deseada, se debe cambiar `const numDicePerPlayer = 1;` a `const numDicePerPlayer = numPlayers - 1;`
-    const numDicePerPlayer = 1; 
+    // ⭐ REQUISITO 1: Cada jugador lanza una cantidad de dados igual a numPlayers - 1
+    const numDicePerPlayer = numPlayers - 1; 
 
     let playerResults = []; // Almacenará el resultado final de cada jugador
     let grandTotalSum = 0; // Suma de todos los dados lanzados en la partida
@@ -406,7 +517,7 @@ window.playGameDice = function() {
         for (let j = 0; j < numDicePerPlayer; j++) {
             const roll = Math.floor(Math.random() * 6) + 1; // D6
             playerTotalSum += roll;
-            rollsDetail.push(roll); // Guardamos la tirada individual
+            rollsDetail.push(roll); 
         }
         
         grandTotalSum += playerTotalSum; // Acumular la suma total de la partida
@@ -414,7 +525,8 @@ window.playGameDice = function() {
         playerResults.push({
             player: playerNumber, 
             totalScore: playerTotalSum,
-            rolls: rollsDetail,
+            // ⭐ REQUISITO 2: Solo se muestra la suma, no es necesario mostrar el detalle de tiradas
+            rolls: rollsDetail, // Mantenerlo por si acaso, pero no se usará en la UI de detalle
             isWinner: false
         });
     }
@@ -454,11 +566,11 @@ window.playGameDice = function() {
             return `
                 <div class="bg-gray-200 dark:bg-gray-700 p-3 rounded-xl text-center shadow-md ${winnerClass}">
                     <p class="text-sm font-semibold text-gray-800 dark:text-gray-200">Jugador ${r.player}</p> 
-                    <p class="text-xs text-gray-500 dark:text-gray-400">(${numDicePerPlayer} dado${numDicePerPlayer > 1 ? 's' : ''})</p>
+                    <p class="text-xs text-gray-500 dark:text-gray-400">(${numDicePerPlayer} dado${numDicePerPlayer !== 1 ? 's' : ''})</p>
                     <span class="text-2xl font-extrabold ${rollTextClass}">
                         ${r.totalScore}
                     </span>
-                    </div>
+                </div>
             `;
         }).join('');
 
@@ -520,9 +632,21 @@ window.copyPassword = function() {
     const passwordOutput = document.getElementById('password-output');
     if (passwordOutput.value) {
         try {
-            passwordOutput.select();
-            document.execCommand('copy');
-            showMessageBox("Contraseña copiada al portapapeles.", 'info');
+            // El Clipboard API es más moderno, pero document.execCommand('copy') es un buen fallback
+            if (navigator.clipboard) {
+                 navigator.clipboard.writeText(passwordOutput.value)
+                     .then(() => showMessageBox("Contraseña copiada al portapapeles (Clipboard API).", 'info'))
+                     .catch(() => {
+                         // Fallback con execCommand
+                         passwordOutput.select();
+                         document.execCommand('copy');
+                         showMessageBox("Contraseña copiada al portapapeles (execCommand).", 'info');
+                     });
+            } else {
+                 passwordOutput.select();
+                 document.execCommand('copy');
+                 showMessageBox("Contraseña copiada al portapapeles (execCommand).", 'info');
+            }
         } catch (err) {
             showMessageBox("Error al copiar. Por favor, hazlo manualmente.", 'error');
         }
@@ -614,7 +738,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 // Renderizar contenido específico al activar pestaña
                 if (targetId === 'notes-content') {
-                    renderNotes();
+                    renderNotes(); // *** Asegura el renderizado con los nuevos botones ***
                 } else if (targetId === 'accounting-content') {
                     renderAccounting();
                 }
@@ -660,5 +784,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // 3. Manejo de la confirmación de borrado
-    document.getElementById('confirm-delete-button').onclick = confirmDelete;
+    const confirmDeleteBtn = document.getElementById('confirm-delete-button');
+    if (confirmDeleteBtn) {
+         confirmDeleteBtn.onclick = window.confirmDelete;
+    }
 });
