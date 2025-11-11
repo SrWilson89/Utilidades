@@ -1,0 +1,32 @@
+/* Configuración de color para Tailwind (Root/Global) */
+:root {
+    color-scheme: light dark;
+}
+body {
+    font-family: 'Inter', sans-serif;
+    transition: background-color 0.3s, color 0.3s;
+}
+/* Estilos específicos para la caja de mensajes (Toast) */
+#message-box {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 1000;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: opacity 0.5s ease-out, transform 0.5s ease-out;
+}
+#message-box.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+.message-success { background-color: #10B981; color: white; } /* Emerald-500 */
+.message-error { background-color: #EF4444; color: white; } /* Red-500 */
+.message-info { background-color: #3B82F6; color: white; } /* Blue-500 */
+
+/* Estilos para el display de dados */
+#main-game-display {
+    font-size: 4rem;
+    line-height: 1;
+    font-weight: 900;
+}
