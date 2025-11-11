@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web de Utilidades: Notas, Contraseñas y Juegos</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module">
+        // Importaciones de Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, deleteDoc, onSnapshot, collection, query, serverTimestamp, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Configuración de Firebase y Variables Globales
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        let app, db, auth;
+        let userId = null;
+        let isAuthReady = false;
+        let dbAvailable = false; 
+        
+        // Clave para localStorage si db está deshabilitada
+        const LOCAL_NOTES_KEY = 'local_user_notes'; 
+
+        /**
+         * Inicializa Firebase, o lo deshabilita si falta la configuración.
+         */
+        function initializeFirebase() {
+            try {
+                // setLogLevel('Debug'); // Dejar deshabilitado para evitar spam en consola a menos que se depure
+                
+                if (Object.keys(firebaseConfig).length > 0) {
+                    app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    dbAvailable = true;
+                    console.log("Firebase inicializado y disponible.");
+
+                    handleAuth();
+                    setupAuthListener();
+                } else {
+                    // Modo sin Base de Datos (solo local)
+                    db = null;
+                    auth = null;
+                    dbAvailable = false;
+                    userId = 'offline_user';
+                    isAuthReady = true;
+                    
+                    const loadingMessage = document.getElementById('loading-message');
+                    loadingMessage.textContent = "AVISO: La función de Notas usa persistencia local (solo funciona en este navegador).";
+                    loadingMessage.classList.add('text-orange-500', 'dark:text-orange-300');
+                    
+                    document.getElementById('loading-overlay').classList.add('hidden');
+                    document.getElementById('main-content').classList.remove('hidden');
+                    document.getElementById('user-id-display').textContent = `ID Usuario: OFFLINE LOCAL`;
+                    
+                    document.getElementById('note-input').removeAttribute('disabled');
+                    document.getElementById('save-note-button').removeAttribute('disabled');
+                }
+            } catch (error) {
+                console.error("Error al inicializar Firebase:", error);
+                // Fallback a modo local si la inicialización falla
+                db = null;
+                auth = null;
+                dbAvailable = false;
+                userId = 'offline_user';
+                isAuthReady = true;
+
+                document.getElementById('loading-message').textContent = "ERROR: Fallo al inicializar Firebase. Usando persistencia local.";
+                document.getElementById('loading-message').classList.add('text-red-500');
+                
+                document.getElementById('loading-overlay').classList.add('hidden');
+                document.getElementById('main-content').classList.remove('hidden');
+            }
+        }
+        
+        /** Maneja la autenticación del usuario. */
+        const handleAuth = async () => {
+            if (!auth) return;
+            try {
+                if (initialAuthToken) {
+                    await signInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (error) {
+                console.error("Error en la autenticación:", error);
+            }
+        };
+
+        // Listener de estado de autenticación (Solo se configura si 'auth' existe)
+        const setupAuthListener = () => {
+             if (!auth) return;
+             onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    document.getElementById('user-id-display').textContent = `ID Usuario: ${userId}`;
+                    isAuthReady = true;
+                    if (document.getElementById('notes-view').classList.contains('active')) {
+                        setupNotesListener();
+                    }
+                } else {
+                    userId = null;
+                    isAuthReady = true;
+                    handleAuth(); 
+                }
+                document.getElementById('loading-overlay').classList.add('hidden');
+                document.getElementById('main-content').classList.remove('hidden');
+             });
+        }
+        
+        // --- LÓGICA DE GESTIÓN DE VISTAS Y MODO OSCURO ---
+        
+        /** Carga la configuración inicial del modo oscuro */
+        window.loadTheme = function() {
+            const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            const savedTheme = localStorage.getItem('theme');
+            
+            if (savedTheme === 'dark' || (!savedTheme && prefersDark)) {
+                document.body.classList.add('dark');
+            } else {
+                document.body.classList.remove('dark');
+            }
+            updateDarkModeIcon();
+        };
+
+        /** Alterna el modo oscuro */
+        window.toggleDarkMode = function() {
+            if (document.body.classList.contains('dark')) {
+                document.body.classList.remove('dark');
+                localStorage.setItem('theme', 'light');
+            } else {
+                document.body.classList.add('dark');
+                localStorage.setItem('theme', 'dark');
+            }
+            updateDarkModeIcon();
+        };
+
+        /** Actualiza el icono del toggle del modo oscuro */
+        function updateDarkModeIcon() {
+            const icon = document.getElementById('dark-mode-icon');
+            const themeText = document.getElementById('theme-status-text');
+            if (document.body.classList.contains('dark')) {
+                // Icono de Sol
+                icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 10a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 00-.707-.293h-1.096a1 1 0 000 2h1.096c.264 0 .52.105.707.293l.707.707a1 1 0 101.414-1.414l-.707-.707zM3.464 15.657l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 12a1 1 0 01-1-1v-1a1 1 0 112 0v1a1 1 0 01-1 1zM2 7a1 1 0 011-1h1a1 1 0 110 2H3a1 1 0 01-1-1zm14 0a1 1 0 011-1h1a1 1 0 110 2h-1a1 1 0 01-1-1z" clip-rule="evenodd" /></svg>`;
+                themeText.textContent = 'Modo Oscuro';
+            } else {
+                // Icono de Luna
+                icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" /></svg>`;
+                themeText.textContent = 'Modo Claro';
+            }
+        }
+
+
+        window.showView = function(viewName) {
+            const views = document.querySelectorAll('.app-view');
+            views.forEach(view => {
+                view.classList.add('hidden');
+                view.classList.remove('active');
+            });
+
+            const targetView = document.getElementById(viewName);
+            if (targetView) {
+                targetView.classList.remove('hidden');
+                targetView.classList.add('active');
+            }
+            
+            // Lógica específica al cambiar a la vista de notas
+            if (viewName === 'notes-view') {
+                 if (dbAvailable && isAuthReady) {
+                    setupNotesListener();
+                    document.getElementById('local-storage-warning').classList.add('hidden');
+                 } else if (!dbAvailable && isAuthReady) {
+                     setupLocalNotesListener();
+                     document.getElementById('local-storage-warning').classList.remove('hidden');
+                 } else {
+                     // Solo si aún no está lista la auth, pero el overlay ya se ocultó.
+                     document.getElementById('notes-list').innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center py-4">Esperando autenticación...</p>';
+                 }
+            } else if (viewName === 'games-view') {
+                document.getElementById('player-count').value = 2; 
+                window.renderGameOptions();
+            }
+
+             // Actualizar botones de navegación
+            document.querySelectorAll('.nav-button').forEach(btn => {
+                const viewTarget = btn.getAttribute('data-view');
+                if (viewTarget === viewName) {
+                    btn.classList.add('bg-indigo-700', 'text-white', 'dark:bg-indigo-500', 'dark:text-gray-900');
+                    btn.classList.remove('bg-white', 'text-indigo-600', 'hover:bg-indigo-100', 'dark:bg-gray-700', 'dark:text-gray-200', 'dark:hover:bg-gray-600');
+                } else {
+                    btn.classList.remove('bg-indigo-700', 'text-white', 'dark:bg-indigo-500', 'dark:text-gray-900');
+                    btn.classList.add('bg-white', 'text-indigo-600', 'hover:bg-indigo-100', 'dark:bg-gray-700', 'dark:text-gray-200', 'dark:hover:bg-gray-600');
+                }
+            });
+        }
+
+        // --- LÓGICA DEL BLOQUE DE NOTAS (Firestore) ---
+        
+        const getNotesCollectionRef = () => {
+             if (!dbAvailable) return null;
+            return collection(db, 'artifacts', appId, 'users', userId, 'notes');
+        };
+
+        let unsubscribeNotes = null;
+
+        const setupNotesListener = () => {
+            if (!isAuthReady || !userId || !dbAvailable || !db) return;
+            
+            if (unsubscribeNotes) {
+                unsubscribeNotes();
+            }
+
+            const notesQuery = query(getNotesCollectionRef());
+
+            unsubscribeNotes = onSnapshot(notesQuery, (snapshot) => {
+                const notesContainer = document.getElementById('notes-list');
+                notesContainer.innerHTML = '';
+                
+                const notes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                notes.sort((a, b) => (b.createdAt?.toDate() || 0) - (a.createdAt?.toDate() || 0));
+
+                renderNotes(notes);
+                
+            }, (error) => {
+                console.error("Error al escuchar las notas:", error);
+                document.getElementById('notes-list').innerHTML = `<p class="text-red-500 text-center py-4">Error al cargar notas de la nube: ${error.message}</p>`;
+            });
+        };
+        
+        // --- LÓGICA DEL BLOQUE DE NOTAS (Local Storage JSON) ---
+        
+        // Función para simular onSnapshot con localStorage
+        window.setupLocalNotesListener = function() {
+            const notes = getLocalNotes();
+            renderNotes(notes);
+        }
+
+        // Obtiene notas de localStorage
+        function getLocalNotes() {
+            try {
+                const notesJson = localStorage.getItem(LOCAL_NOTES_KEY);
+                return notesJson ? JSON.parse(notesJson) : [];
+            } catch (e) {
+                console.error("Error parsing local storage notes:", e);
+                return [];
+            }
+        }
+        
+        // Guarda notas en localStorage
+        function saveLocalNotes(notes) {
+            try {
+                localStorage.setItem(LOCAL_NOTES_KEY, JSON.stringify(notes));
+                setupLocalNotesListener(); // Simula el update en tiempo real
+            } catch (e) {
+                console.error("Error saving notes to local storage:", e);
+                showMessage('Error al guardar notas en el navegador.', 'error');
+            }
+        }
+        
+        /** Renderiza la lista de notas (común a Firestore y Local) */
+        function renderNotes(notes) {
+            const notesContainer = document.getElementById('notes-list');
+            notesContainer.innerHTML = '';
+            
+            if (notes.length === 0) {
+                 notesContainer.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center py-4">Aún no hay notas. ¡Añade una!</p>';
+                 return;
+            }
+
+            notes.forEach(note => {
+                const noteElement = createNoteElement(note);
+                notesContainer.appendChild(noteElement);
+            });
+        }
+        
+        /** Crea el elemento HTML para una nota */
+        const createNoteElement = (note) => {
+            const div = document.createElement('div');
+            // Formatear la fecha para notas locales (simulando un objeto Date)
+            const dateObj = note.createdAt ? (dbAvailable ? new Date(note.createdAt.toDate()) : new Date(note.createdAt)) : new Date();
+            const creationDate = dateObj.toLocaleString();
+            
+            // Codificación para pasar el contenido en el onclick
+            const encodedContent = btoa(encodeURIComponent(note.content));
+
+            div.className = 'bg-white dark:bg-gray-700 p-4 rounded-xl shadow-lg border-l-4 border-indigo-500 mb-4';
+            div.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <p id="note-content-${note.id}" class="text-gray-800 dark:text-gray-100 whitespace-pre-wrap flex-grow mr-4">${note.content}</p>
+                    <div class="flex-shrink-0 space-x-2">
+                        <button onclick="editNote('${note.id}', '${encodedContent}')" 
+                                class="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-200 p-1 rounded-full hover:bg-indigo-50 dark:hover:bg-gray-600 transition duration-150" 
+                                title="Editar">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M17.414 2.586a2 2 0 00-2.828 0L7 10.172V13h2.828l7.586-7.586a2 2 0 000-2.828z" /><path fill-rule="evenodd" d="M2 6a2 2 0 012-2h4a1 1 0 010 2H4v10h10v-4a1 1 0 112 0v4a2 2 0 01-2 2H4a2 2 0 01-2-2V6z" clip-rule="evenodd" /></svg>
+                        </button>
+                        <button onclick="copyNote('${note.id}')" 
+                                class="text-green-600 dark:text-green-400 hover:text-green-800 dark:hover:text-green-200 p-1 rounded-full hover:bg-green-50 dark:hover:bg-gray-600 transition duration-150" 
+                                title="Copiar">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path d="M8 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1z" /><path d="M6 3a2 2 0 00-2 2v11a2 2 0 002 2h8a2 2 0 002-2V5a2 2 0 00-2-2 3 3 0 01-3 3H9a3 3 0 01-3-3z" /></svg>
+                        </button>
+                        <button onclick="showDeleteConfirmation('${note.id}')" 
+                                class="text-red-600 dark:text-red-400 hover:text-red-800 dark:hover:text-red-200 p-1 rounded-full hover:bg-red-50 dark:hover:bg-gray-600 transition duration-150" 
+                                title="Borrar">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm4 0a1 1 0 10-2 0v6a1 1 0 102 0V8z" clip-rule="evenodd" /></svg>
+                        </button>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-400 dark:text-gray-500 mt-2">Creada: ${creationDate} ${!dbAvailable ? '(Local)' : ''}</p>
+            `;
+            return div;
+        };
+
+        /** Añade o actualiza una nota (Unificado para Cloud/Local) */
+        window.saveNote = async function() {
+            const noteInput = document.getElementById('note-input');
+            const noteContent = noteInput.value.trim();
+            const noteId = document.getElementById('editing-note-id').value;
+            
+            if (noteContent === '') {
+                showMessage('La nota no puede estar vacía.', 'warning');
+                return;
+            }
+
+            try {
+                if (dbAvailable && userId && db) {
+                    // MODO CLOUD (Firestore)
+                    if (noteId) {
+                        const noteRef = doc(db, getNotesCollectionRef().path, noteId);
+                        await updateDoc(noteRef, { content: noteContent });
+                        showMessage('Nota actualizada con éxito (Cloud).', 'success');
+                    } else {
+                        await addDoc(getNotesCollectionRef(), {
+                            content: noteContent,
+                            createdAt: serverTimestamp(),
+                            userId: userId,
+                        });
+                        showMessage('Nota guardada con éxito (Cloud).', 'success');
+                    }
+                } else {
+                    // MODO LOCAL (LocalStorage)
+                    let notes = getLocalNotes();
+                    if (noteId) {
+                        notes = notes.map(n => n.id === noteId ? { ...n, content: noteContent, createdAt: new Date().toISOString() } : n);
+                        showMessage('Nota actualizada con éxito (Local).', 'success');
+                    } else {
+                        notes.unshift({
+                            id: crypto.randomUUID(), // Generar un ID local único
+                            content: noteContent,
+                            createdAt: new Date().toISOString(), // Usar ISO string para persistencia
+                            userId: 'offline_user',
+                        });
+                        showMessage('Nota guardada con éxito (Local).', 'success');
+                    }
+                    saveLocalNotes(notes);
+                }
+                
+                // Limpieza común
+                noteInput.value = '';
+                document.getElementById('editing-note-id').value = '';
+                document.getElementById('save-note-button').textContent = 'Guardar Nota';
+
+            } catch (e) {
+                console.error("Error al guardar la nota:", e);
+                showMessage('Error al guardar/actualizar la nota.', 'error');
+            }
+        };
+
+        /** Edita una nota (carga el contenido en el input) */
+        window.editNote = function(id, encodedContent) {
+            const content = decodeURIComponent(atob(encodedContent));
+            document.getElementById('note-input').value = content;
+            document.getElementById('editing-note-id').value = id;
+            document.getElementById('save-note-button').textContent = 'Actualizar Nota';
+            document.getElementById('note-input').focus();
+            showMessage('Editando nota. Haz clic en "Actualizar Nota" para guardar los cambios.', 'info', 5000);
+        };
+        
+        /** Copia el contenido de una nota al portapapeles */
+        window.copyNote = function(id) {
+            const contentElement = document.getElementById(`note-content-${id}`);
+            const textToCopy = contentElement.textContent;
+            
+            const textarea = document.createElement('textarea');
+            textarea.value = textToCopy;
+            document.body.appendChild(textarea);
+            textarea.select();
+            
+            try {
+                document.execCommand('copy');
+                showMessage('Nota copiada al portapapeles.', 'success');
+            } catch (err) {
+                console.error('No se pudo copiar el texto: ', err);
+                showMessage('No se pudo copiar automáticamente. Por favor, selecciona y copia manualmente.', 'warning', 5000);
+            } finally {
+                document.body.removeChild(textarea);
+            }
+        };
+        
+        /** Muestra el modal de confirmación de borrado */
+        window.showDeleteConfirmation = function(noteId) {
+            document.getElementById('delete-modal').classList.remove('hidden');
+            document.getElementById('confirm-delete-button').onclick = () => deleteNote(noteId);
+        };
+
+        /** Oculta el modal de confirmación de borrado */
+        window.hideDeleteConfirmation = function() {
+            document.getElementById('delete-modal').classList.add('hidden');
+        };
+
+        /** Borra una nota (Unificado para Cloud/Local) */
+        const deleteNote = async (id) => {
+            window.hideDeleteConfirmation();
+
+            try {
+                if (dbAvailable && userId && db) {
+                    // MODO CLOUD (Firestore)
+                    const noteRef = doc(db, getNotesCollectionRef().path, id);
+                    await deleteDoc(noteRef);
+                    showMessage('Nota eliminada correctamente (Cloud).', 'success');
+                } else {
+                    // MODO LOCAL (LocalStorage)
+                    let notes = getLocalNotes();
+                    notes = notes.filter(n => n.id !== id);
+                    saveLocalNotes(notes);
+                    showMessage('Nota eliminada correctamente (Local).', 'success');
+                }
+            } catch (e) {
+                console.error("Error al borrar la nota:", e);
+                showMessage('Error al eliminar la nota.', 'error');
+            }
+        };
+
+        // --- LÓGICA DEL GENERADOR DE CONTRASEÑAS ---
+
+        const CHAR_SETS = {
+            lowercase: 'abcdefghijklmnopqrstuvwxyz',
+            uppercase: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
+            numbers: '0123456789',
+            symbols: '!@#$%^&*()_+~`|}{[]:;?><,./-='
+        };
+        
+        window.generatePassword = function() {
+            const length = parseInt(document.getElementById('length-slider').value);
+            const useLowercase = document.getElementById('checkbox-lowercase').checked;
+            const useUppercase = document.getElementById('checkbox-uppercase').checked;
+            const useNumbers = document.getElementById('checkbox-numbers').checked;
+            const useSymbols = document.getElementById('checkbox-symbols').checked;
+            const outputElement = document.getElementById('password-output');
+
+            let allChars = '';
+            if (useLowercase) allChars += CHAR_SETS.lowercase;
+            if (useUppercase) allChars += CHAR_SETS.uppercase;
+            if (useNumbers) allChars += CHAR_SETS.numbers;
+            if (useSymbols) allChars += CHAR_SETS.symbols;
+
+            if (allChars.length === 0) {
+                outputElement.value = 'Selecciona al menos un tipo de carácter.';
+                return;
+            }
+
+            let password = '';
+            const ensureChars = [];
+            if (useLowercase) ensureChars.push(CHAR_SETS.lowercase);
+            if (useUppercase) ensureChars.push(CHAR_SETS.uppercase);
+            if (useNumbers) ensureChars.push(CHAR_SETS.numbers);
+            if (useSymbols) ensureChars.push(CHAR_SETS.symbols);
+
+            for (let i = 0; i < length; i++) {
+                const randomIndex = Math.floor(Math.random() * allChars.length);
+                password += allChars[randomIndex];
+            }
+
+            if (password.length >= ensureChars.length) {
+                 for (let i = 0; i < ensureChars.length; i++) {
+                    const charSet = ensureChars[i];
+                    const randomChar = charSet[Math.floor(Math.random() * charSet.length)];
+                    password = password.substring(0, i) + randomChar + password.substring(i + 1);
+                }
+            }
+
+            password = password.split('').sort(() => 0.5 - Math.random()).join('');
+
+            outputElement.value = password;
+        };
+
+        /** Copia la contraseña generada al portapapeles */
+        window.copyPassword = function() {
+            const output = document.getElementById('password-output');
+            
+            if (output.value === '' || output.value.includes('Selecciona')) {
+                showMessage('¡Primero genera una contraseña!', 'warning');
+                return;
+            }
+
+            output.select();
+            output.setSelectionRange(0, 99999);
+            
+            try {
+                document.execCommand('copy');
+                showMessage('¡Contraseña copiada al portapapeles!', 'success');
+            } catch (err) {
+                console.error('Error al copiar:', err);
+                showMessage('No se pudo copiar automáticamente. Por favor, selecciona y copia manualmente.', 'warning', 5000);
+            }
+        };
+
+        // --- LÓGICA DE JUEGOS DE AZAR ---
+
+        window.renderGameOptions = function() {
+            const playerCountInput = document.getElementById('player-count');
+            const playerCount = parseInt(playerCountInput.value);
+            const gameArea = document.getElementById('game-options-area');
+            const resultsArea = document.getElementById('game-results');
+            gameArea.innerHTML = '';
+            resultsArea.innerHTML = '';
+
+            if (isNaN(playerCount) || playerCount < 2) {
+                gameArea.innerHTML = `
+                    <p class="text-gray-600 dark:text-gray-400 text-center p-4">
+                        Introduce 2 o más jugadores para comenzar.
+                    </p>
+                `;
+            } else if (playerCount === 2) {
+                // Cara o Cruz (Coin Flip)
+                gameArea.innerHTML = `
+                    <div class="p-6 bg-green-50 dark:bg-gray-700 rounded-xl shadow-inner text-center">
+                        <h4 class="text-xl font-semibold text-green-700 dark:text-green-400 mb-4">Cara o Cruz (2 Jugadores)</h4>
+                        <p class="text-gray-600 dark:text-gray-300 mb-4">El juego seleccionará aleatoriamente un ganador entre los dos jugadores.</p>
+                        <button onclick="flipCoin()" class="w-full bg-green-600 text-white font-bold py-3 rounded-lg hover:bg-green-700 transition duration-150 transform hover:scale-[1.01]">
+                            LANZAR MONEDA
+                        </button>
+                    </div>
+                `;
+            } else if (playerCount >= 3) {
+                // Dados (Dice Roll)
+                const numDice = playerCount - 1;
+                gameArea.innerHTML = `
+                    <div class="p-6 bg-blue-50 dark:bg-gray-700 rounded-xl shadow-inner text-center">
+                        <h4 class="text-xl font-semibold text-blue-700 dark:text-blue-400 mb-4">Dados (3+ Jugadores)</h4>
+                        <p class="text-gray-600 dark:text-gray-300 mb-4">
+                            Cada jugador tirará **${numDice} dado${numDice > 1 ? 's' : ''} de 6 caras**. ¡El total más alto gana!
+                        </p>
+                        <button onclick="runDiceGame(${playerCount})" class="w-full bg-blue-600 text-white font-bold py-3 rounded-lg hover:bg-blue-700 transition duration-150 transform hover:scale-[1.01]">
+                            TIRAR LOS DADOS
+                        </button>
+                    </div>
+                `;
+            }
+        };
+
+        window.flipCoin = function() {
+            const resultsArea = document.getElementById('game-results');
+            resultsArea.innerHTML = '';
+            const isHeads = Math.random() < 0.5;
+            const winner = isHeads ? 'Jugador 1' : 'Jugador 2';
+            const resultText = isHeads ? 'CARA' : 'CRUZ';
+            const icon = isHeads ? '&#x1F947;' : '&#x1F3C6;'; 
+
+            resultsArea.innerHTML = `
+                <div class="text-center p-6 bg-white dark:bg-gray-800 rounded-xl shadow-lg border-2 border-green-500">
+                    <p class="text-6xl mb-4 animate-bounce">${icon}</p>
+                    <h4 class="text-3xl font-extrabold text-gray-800 dark:text-gray-100 mb-2">¡Resultado: ${resultText}!</h4>
+                    <p class="text-2xl font-semibold text-green-600 dark:text-green-400">¡El <span class="text-indigo-600 dark:text-indigo-400">${winner}</span> ha ganado!</p>
+                </div>
+            `;
+        };
+
+        window.runDiceGame = function(playerCount) {
+            const resultsArea = document.getElementById('game-results');
+            resultsArea.innerHTML = '';
+            const numDice = playerCount - 1;
+            const playerResults = [];
+
+            for (let i = 1; i <= playerCount; i++) {
+                const rolls = [];
+                let total = 0;
+                for (let d = 0; d < numDice; d++) {
+                    const roll = Math.floor(Math.random() * 6) + 1; // 1 to 6
+                    rolls.push(roll);
+                    total += roll;
+                }
+                playerResults.push({ id: i, rolls, total });
+            }
+
+            // Encontrar al ganador (el de mayor total)
+            playerResults.sort((a, b) => b.total - a.total);
+            const winnerTotal = playerResults[0].total;
+            const winners = playerResults.filter(p => p.total === winnerTotal);
+
+            const resultsHTML = playerResults.map(p => `
+                <div class="p-4 rounded-lg shadow-md border-2 ${winners.some(w => w.id === p.id) ? 'border-amber-400 bg-amber-50 dark:bg-amber-900/50' : 'border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700'}" style="order: ${p.id};">
+                    <h5 class="text-xl font-bold ${winners.some(w => w.id === p.id) ? 'text-amber-700 dark:text-amber-300' : 'text-indigo-600 dark:text-indigo-400'} mb-2">
+                        ${winners.some(w => w.id === p.id) ? '🏆 ' : ''} Jugador ${p.id}
+                    </h5>
+                    <p class="text-lg text-gray-700 dark:text-gray-200 mb-1">
+                        Dados (${numDice}d6): <span class="font-mono text-base">${p.rolls.join(' | ')}</span>
+                    </p>
+                    <p class="text-2xl font-extrabold ${winners.some(w => w.id === p.id) ? 'text-amber-900 dark:text-amber-100' : 'text-gray-800 dark:text-gray-100'}">
+                        Total: ${p.total}
+                    </p>
+                </div>
+            `).join('');
+            
+            resultsArea.innerHTML = `
+                <h4 class="text-2xl font-bold text-gray-800 dark:text-gray-100 mb-4">Resultados de la Tirada:</h4>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    ${resultsHTML}
+                </div>
+                <div class="text-center mt-6 p-4 bg-indigo-100 dark:bg-indigo-900/50 rounded-xl shadow-lg">
+                     <p class="text-xl font-bold text-indigo-800 dark:text-indigo-200">
+                        ${winners.length === 1 ? `¡El Jugador ${winners[0].id} gana con ${winnerTotal}!` : `¡Empate con ${winnerTotal}! Ganadores: ${winners.map(w => 'Jugador ' + w.id).join(', ')}`}
+                     </p>
+                </div>
+            `;
+        };
+
+        // --- LÓGICA DE MENSAJES (No usar alert()) ---
+
+        /** Muestra mensajes temporales en un toast */
+        function showMessage(text, type = 'info', duration = 3000) {
+            const toast = document.getElementById('app-toast');
+            const messageElement = document.getElementById('toast-message');
+
+            toast.className = 'fixed bottom-5 right-5 p-4 rounded-xl shadow-2xl transition-transform transform';
+            toast.classList.add('dark:shadow-indigo-900/50');
+
+            if (type === 'success') {
+                toast.classList.add('bg-green-500', 'text-white');
+            } else if (type === 'error') {
+                toast.classList.add('bg-red-600', 'text-white');
+            } else if (type === 'warning') {
+                toast.classList.add('bg-yellow-500', 'text-gray-800');
+            } else { // info
+                toast.classList.add('bg-blue-500', 'text-white');
+            }
+
+            messageElement.textContent = text;
+            toast.classList.remove('translate-y-full'); 
+            toast.classList.add('translate-y-0');
+
+            setTimeout(() => {
+                toast.classList.remove('translate-y-0');
+                toast.classList.add('translate-y-full'); 
+            }, duration);
+        }
+        
+        window.onload = function() {
+            window.loadTheme(); // Cargar el tema primero
+            initializeFirebase(); 
+
+            const lengthSlider = document.getElementById('length-slider');
+            const lengthDisplay = document.getElementById('length-display');
+            lengthDisplay.textContent = lengthSlider.value;
+            lengthSlider.addEventListener('input', () => {
+                lengthDisplay.textContent = lengthSlider.value;
+                window.generatePassword(); 
+            });
+
+            const playerCountInput = document.getElementById('player-count');
+            playerCountInput.addEventListener('input', window.renderGameOptions);
+
+            showView('home-view');
+            window.generatePassword(); 
+        };
+        
+    </script>
+    <style>
+        :root {
+            --color-primary: #4f46e5;
+            /* Modo Claro - Valores base */
+            --bg-body-light: #f3f4f6; /* gray-100 */
+            --bg-card-light: #ffffff; /* white */
+            --text-default-light: #1f2937; /* gray-800 */
+            --text-secondary-light: #4b5563; /* gray-600 */
+            --border-light: #e5e7eb; /* gray-200 */
+        }
+
+        /* Modo Oscuro - Colores de alto contraste */
+        .dark {
+            --bg-body-dark: #0f172a; /* slate-900 (Más oscuro que gray-900) */
+            --bg-card-dark: #1e293b; /* slate-800 */
+            --text-default-dark: #f1f5f9; /* slate-100 */
+            --text-secondary-dark: #94a3b8; /* slate-400 */
+            --border-dark: #334155; /* slate-700 */
+        }
+        
+        /* Aplicar variables CSS para mayor contraste */
+        .bg-gray-100 { background-color: var(--bg-body-light); }
+        .dark .bg-gray-100 { background-color: var(--bg-body-dark); }
+
+        .bg-white { background-color: var(--bg-card-light); }
+        .dark .bg-white { background-color: var(--bg-card-dark); }
+        
+        .text-gray-800 { color: var(--text-default-light); }
+        .dark .text-gray-800 { color: var(--text-default-dark); }
+
+        .text-gray-600 { color: var(--text-secondary-light); }
+        .dark .text-gray-600 { color: var(--text-secondary-dark); }
+
+        /* Controles de formulario (Inputs, Textarea) */
+        .border-gray-300 { border-color: var(--border-light); }
+        .dark .border-gray-300 { border-color: var(--border-dark); }
+        
+        /* Ajuste para input/textarea en oscuro */
+        .dark .dark\:bg-gray-700 { background-color: #334155 !important; /* slate-700 */ }
+        .dark .dark\:text-gray-100 { color: #f1f5f9 !important; }
+
+
+        .shadow-3xl-indigo {
+            box-shadow: 0 15px 30px -5px rgba(79, 70, 229, 0.4);
+        }
+
+        /* Estilos de sombra más pronunciados en modo oscuro */
+        .dark .shadow-md {
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4), 0 2px 4px -2px rgba(0, 0, 0, 0.4);
+        }
+        .dark .shadow-lg {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5), 0 4px 6px -4px rgba(0, 0, 0, 0.5);
+        }
+        .dark .shadow-xl {
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 8px 10px -6px rgba(0, 0, 0, 0.6);
+        }
+
+        /* Estilos para el slider del generador de contraseñas */
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--color-primary);
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+            margin-top: -8px;
+        }
+        input[type=range]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            background: var(--color-primary);
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(0, 0, 0, 0.2);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 min-h-screen flex flex-col font-sans antialiased transition-colors duration-300">
+
+    <!-- Overlay de Carga Inicial -->
+    <div id="loading-overlay" class="fixed inset-0 bg-gray-900 bg-opacity-90 flex items-center justify-center z-50">
+        <div class="text-center p-6 bg-white rounded-xl shadow-2xl">
+            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600 mx-auto mb-4"></div>
+            <p id="loading-message" class="text-lg text-indigo-600 font-semibold">Cargando aplicación y comprobando base de datos...</p>
+        </div>
+    </div>
+
+    <!-- Contenido Principal -->
+    <div id="main-content" class="flex flex-col flex-grow hidden">
+        
+        <!-- Encabezado y Navegación -->
+        <header class="bg-white dark:bg-gray-800 shadow-xl p-4 sticky top-0 z-10 transition-colors duration-300">
+            <div class="max-w-4xl mx-auto flex flex-col sm:flex-row justify-between items-center space-y-3 sm:space-y-0">
+                <h1 class="text-2xl font-extrabold text-indigo-600 dark:text-indigo-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 inline-block mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z" /></svg>
+                    Utilidades Web
+                </h1>
+                
+                <div class="flex items-center space-x-3">
+                    <div class="flex space-x-2 bg-gray-100 dark:bg-gray-700 p-1 rounded-full">
+                        <button class="nav-button bg-indigo-700 text-white dark:bg-indigo-500 dark:text-gray-900 px-4 py-2 rounded-full font-medium transition duration-200" data-view="home-view" onclick="showView('home-view')">Inicio</button>
+                        <button class="nav-button bg-white text-indigo-600 hover:bg-indigo-100 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 px-4 py-2 rounded-full font-medium transition duration-200" data-view="notes-view" onclick="showView('notes-view')">Notas</button>
+                        <button class="nav-button bg-white text-indigo-600 hover:bg-indigo-100 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 px-4 py-2 rounded-full font-medium transition duration-200" data-view="password-view" onclick="showView('password-view')">Contraseñas</button>
+                        <button class="nav-button bg-white text-indigo-600 hover:bg-indigo-100 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600 px-4 py-2 rounded-full font-medium transition duration-200" data-view="games-view" onclick="showView('games-view')">Juegos de Azar</button>
+                    </div>
+
+                    <!-- Botón de Modo Oscuro -->
+                    <button onclick="toggleDarkMode()" class="flex items-center space-x-2 p-2 bg-gray-200 dark:bg-gray-700 rounded-full text-gray-800 dark:text-yellow-400 hover:bg-gray-300 dark:hover:bg-gray-600 transition duration-150">
+                        <span id="dark-mode-icon"></span>
+                        <span id="theme-status-text" class="text-sm font-semibold text-gray-800 dark:text-gray-300 pr-1"></span>
+                    </button>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Identificador de Usuario (Importante para Firestore) -->
+        <div class="bg-indigo-100 dark:bg-indigo-900 p-2 text-center text-sm text-indigo-800 dark:text-indigo-200 font-mono" id="user-id-display">
+            ID Usuario: Cargando...
+        </div>
+
+        <!-- Contenedor de Vistas -->
+        <main class="max-w-4xl mx-auto p-4 flex-grow w-full">
+
+            <!-- 1. VISTA DE INICIO -->
+            <div id="home-view" class="app-view active">
+                <div class="text-center py-10">
+                    <h2 class="text-4xl font-bold text-gray-800 dark:text-gray-100 mb-6">Bienvenido/a a tu Web de Utilidades</h2>
+                    <p class="text-xl text-gray-600 dark:text-gray-300 mb-10">Selecciona una de las herramientas que hemos desarrollado para ti.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Tarjeta: Notas -->
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-3xl-indigo hover:shadow-xl transition duration-300 transform hover:scale-[1.02]">
+                        <h3 class="text-2xl font-semibold text-indigo-600 dark:text-indigo-400 mb-3 flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            Bloque de Notas
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-300 mb-4">Guarda, edita, borra y copia tus notas en tiempo real con o sin persistencia en la nube.</p>
+                        <button class="w-full bg-indigo-600 text-white py-2 rounded-lg font-bold hover:bg-indigo-700 transition duration-150" onclick="showView('notes-view')">
+                            Ir al Bloque de Notas
+                        </button>
+                    </div>
+
+                    <!-- Tarjeta: Contraseñas -->
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-3xl-indigo hover:shadow-xl transition duration-300 transform hover:scale-[1.02]">
+                        <h3 class="text-2xl font-semibold text-purple-600 dark:text-purple-400 mb-3 flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
+                            Generador de Contraseñas
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-300 mb-4">Crea contraseñas robustas y seguras, personalizando la longitud y los tipos de caracteres.</p>
+                        <button class="w-full bg-purple-600 text-white py-2 rounded-lg font-bold hover:bg-purple-700 transition duration-150" onclick="showView('password-view')">
+                            Ir al Generador
+                        </button>
+                    </div>
+                    
+                    <!-- Tarjeta: Juegos de Azar -->
+                    <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-3xl-indigo hover:shadow-xl transition duration-300 transform hover:scale-[1.02]">
+                        <h3 class="text-2xl font-semibold text-red-600 dark:text-red-400 mb-3 flex items-center">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                            Juegos de Azar
+                        </h3>
+                        <p class="text-gray-600 dark:text-gray-300 mb-4">Lanza monedas (Cara o Cruz) o juega a Dados contra Dados según el número de jugadores.</p>
+                        <button class="w-full bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 transition duration-150" onclick="showView('games-view')">
+                            Ir a Juegos
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 2. VISTA DEL BLOQUE DE NOTAS -->
+            <div id="notes-view" class="app-view hidden">
+                <h2 class="text-3xl font-bold text-gray-800 dark:text-gray-100 mb-6 border-b pb-2">📋 Bloque de Notas</h2>
+                
+                <!-- Advertencia de Persistencia Local (Sólo si DB está deshabilitada) -->
+                <div id="local-storage-warning" class="hidden bg-yellow-100 dark:bg-yellow-900 border border-yellow-400 text-yellow-800 dark:text-yellow-200 p-4 rounded-xl mb-6 shadow-md" role="alert">
+                    <div class="flex items-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.398 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                        <p class="font-bold">Persistencia Local Activa (JSON)</p>
+                    </div>
+                    <p class="mt-2 text-sm">Tus notas se guardan solo en este navegador. **No se sincronizarán** con otros dispositivos ni con otros navegadores. Para guardar en la nube, se requiere la configuración de la base de datos de Firebase.</p>
+                </div>
+
+                <!-- Formulario para Añadir/Editar Nota -->
+                <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg mb-8">
+                    <textarea id="note-input" rows="4" class="w-full p-3 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 transition duration-150" placeholder="Escribe tu nueva nota aquí..." required></textarea>
+                    <input type="hidden" id="editing-note-id" value="">
+                    <button id="save-note-button" onclick="saveNote()" 
+                            class="mt-3 w-full sm:w-auto bg-indigo-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-indigo-700 transition duration-150 transform hover:scale-[1.01] shadow-md disabled:opacity-50">
+                        Guardar Nota
+                    </button>
+                </div>
+                
+                <!-- Lista de Notas -->
+                <div id="notes-list" class="space-y-4">
+                    <p class="text-gray-500 dark:text-gray-400 text-center py-4">Cargando notas...</p>
+                </div>
+            </div>
+
+            <!-- 3. VISTA DEL GENERADOR DE CONTRASEÑAS -->
+            <div id="password-view" class="app-view hidden">
+                 <h2 class="text-3xl font-bold text-gray-800 dark:text-gray-100 mb-6 border-b pb-2">🔑 Generador de Contraseñas</h2>
+
+                 <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg space-y-6">
+
+                     <!-- Salida de Contraseña -->
+                     <div>
+                        <label for="password-output" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Contraseña Generada</label>
+                        <input type="text" id="password-output" readonly placeholder="Pulsa Generar o ajusta los parámetros..."
+                               class="w-full p-4 text-xl text-indigo-800 dark:text-indigo-200 bg-indigo-50 dark:bg-gray-700 border-2 border-indigo-200 dark:border-indigo-900 rounded-xl font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500 select-all cursor-text">
+                     </div>
+
+                    <!-- Botón de Copiar GRANDE -->
+                    <button onclick="copyPassword()" 
+                            class="w-full bg-green-600 text-white text-lg font-extrabold py-4 rounded-xl shadow-lg hover:bg-green-700 transition duration-200 transform hover:scale-[1.01] flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 mr-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m-7 4H9m2 0h2" /></svg>
+                        COPIAR CONTRASEÑA
+                    </button>
+
+                    <!-- Control de Longitud -->
+                    <div class="pt-4 border-t border-gray-200 dark:border-gray-700">
+                        <label for="length-slider" class="block text-lg font-bold text-gray-800 dark:text-gray-100 mb-2 flex justify-between items-center">
+                            <span>Longitud: <span id="length-display" class="text-indigo-600 dark:text-indigo-400">12</span> caracteres</span>
+                            <span class="text-sm font-normal text-gray-500 dark:text-gray-400">Mín: 8 | Máx: 20</span>
+                        </label>
+                        <input type="range" id="length-slider" min="8" max="20" value="12" 
+                               class="w-full h-2 bg-gray-200 dark:bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg">
+                    </div>
+
+                    <!-- Opciones de Caracteres -->
+                    <div class="grid grid-cols-2 gap-4">
+                        <label class="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition">
+                            <input type="checkbox" id="checkbox-uppercase" checked onchange="generatePassword()" class="h-5 w-5 text-purple-600 dark:text-purple-400 border-gray-300 dark:border-gray-600 rounded focus:ring-purple-500">
+                            <span class="ml-3 text-gray-700 dark:text-gray-200">Letras Mayúsculas (ABC)</span>
+                        </label>
+                        <label class="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition">
+                            <input type="checkbox" id="checkbox-lowercase" checked onchange="generatePassword()" class="h-5 w-5 text-purple-600 dark:text-purple-400 border-gray-300 dark:border-gray-600 rounded focus:ring-purple-500">
+                            <span class="ml-3 text-gray-700 dark:text-gray-200">Letras Minúsculas (abc)</span>
+                        </label>
+                        <label class="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition">
+                            <input type="checkbox" id="checkbox-numbers" checked onchange="generatePassword()" class="h-5 w-5 text-purple-600 dark:text-purple-400 border-gray-300 dark:border-gray-600 rounded focus:ring-purple-500">
+                            <span class="ml-3 text-gray-700 dark:text-gray-200">Números (123)</span>
+                        </label>
+                        <label class="flex items-center p-3 bg-gray-50 dark:bg-gray-700 rounded-lg cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-600 transition">
+                            <input type="checkbox" id="checkbox-symbols" onchange="generatePassword()" class="h-5 w-5 text-purple-600 dark:text-purple-400 border-gray-300 dark:border-gray-600 rounded focus:ring-purple-500">
+                            <span class="ml-3 text-gray-700 dark:text-gray-200">Símbolos (!@#)</span>
+                        </label>
+                    </div>
+
+                    <button onclick="generatePassword()" 
+                            class="w-full bg-purple-600 text-white font-bold py-3 rounded-lg hover:bg-purple-700 transition duration-150 transform hover:scale-[1.01] shadow-md">
+                        Generar Nueva Contraseña
+                    </button>
+
+                 </div>
+            </div>
+            
+            <!-- 4. VISTA DE JUEGOS DE AZAR -->
+            <div id="games-view" class="app-view hidden">
+                 <h2 class="text-3xl font-bold text-gray-800 dark:text-gray-100 mb-6 border-b pb-2">🎲 Juegos de Azar</h2>
+
+                 <div class="bg-white dark:bg-gray-800 p-6 rounded-2xl shadow-lg space-y-6">
+                    
+                     <!-- Selector de Jugadores -->
+                    <div class="pb-4 border-b border-gray-200 dark:border-gray-700">
+                        <label for="player-count" class="block text-lg font-bold text-gray-800 dark:text-gray-100 mb-2">¿Cuántos jugadores sois?</label>
+                        <input type="number" id="player-count" min="2" value="2" onchange="renderGameOptions()"
+                               class="w-full sm:w-1/2 p-3 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500">
+                    </div>
+                    
+                    <!-- Opciones de Juego (Se rellena con JS) -->
+                    <div id="game-options-area" class="min-h-[100px]">
+                        <!-- Contenido dinámico aquí -->
+                    </div>
+
+                    <!-- Resultados del Juego (Se rellena con JS) -->
+                    <div id="game-results" class="pt-6 border-t border-gray-200 dark:border-gray-700 space-y-4">
+                        <p class="text-gray-500 dark:text-gray-400 text-center">Pulsa un botón de juego para ver los resultados aquí.</p>
+                    </div>
+
+                 </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Modal de Confirmación de Borrado (Reemplaza a window.confirm) -->
+    <div id="delete-modal" class="hidden fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center z-50">
+        <div class="bg-white dark:bg-gray-800 p-6 rounded-xl shadow-2xl max-w-sm w-full">
+            <h3 class="text-xl font-bold text-red-600 dark:text-red-400 mb-4">Confirmar Eliminación</h3>
+            <p class="text-gray-700 dark:text-gray-200 mb-6">¿Estás seguro de que quieres borrar esta nota? Esta acción no se puede deshacer.</p>
+            <div class="flex justify-end space-x-3">
+                <button onclick="hideDeleteConfirmation()" class="px-4 py-2 bg-gray-200 dark:bg-gray-700 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition">
+                    Cancelar
+                </button>
+                <button id="confirm-delete-button" class="px-4 py-2 bg-red-600 text-white rounded-lg font-semibold hover:bg-red-700 transition">
+                    Sí, Borrar
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast de Mensajes (Reemplaza a window.alert) -->
+    <div id="app-toast" class="fixed bottom-5 right-5 p-4 rounded-xl shadow-2xl transition-transform transform translate-y-full duration-300 ease-in-out z-50">
+        <p id="toast-message" class="font-medium"></p>
+    </div>
+
+</body>
+</html>
