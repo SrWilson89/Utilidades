@@ -760,7 +760,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Activar la pestaña de Contabilidad al inicio
-    activateTab('accounting-content');
+    activateTab('passwords-content');
 
 
     // 2. Manejo de la adición de Notas
@@ -789,20 +789,3 @@ document.addEventListener('DOMContentLoaded', () => {
          confirmDeleteBtn.onclick = window.confirmDelete;
     }
 });
-document.addEventListener('DOMContentLoaded', function() {
-        const boton = document.getElementById('desbloquearPotencial');
-        const urlDestino = "https://srwilson89.github.io/Portfolio/"; // Tu URL
-
-        boton.addEventListener('click', function(evento) {
-            // 1. Previene la acción por defecto del click (si fuese un enlace)
-            // Aunque es un botón, es buena práctica si en el futuro se cambia
-            evento.preventDefault(); 
-
-            // 2. Muestra el mensaje de desbloqueo
-            alert('🚀 ¡Potencial activado! Redirigiendo a tu portfolio.');
-
-            // 3. Redirige a la URL después de que el usuario cierre la alerta
-            // (La función window.open('_self') asegura que se abra en la misma pestaña)
-            window.open(urlDestino, '_self');
-        });
-    });
